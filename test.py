@@ -177,12 +177,10 @@ def module_compare(module_list):
             module_list[1].state_dict()[i].size())
             print(i)
 
-
 class HumanModel:
     def __init__(self, device):
 
         config = './experiments/release/custom_config.yaml'
-
         #DETECT
         path_detect = 'checkpoints/ckpt_task4_iter_newest.pth.tar'
         #POSE
@@ -211,24 +209,25 @@ class HumanModel:
             pose_ckpt[key[7:]] = pose_ckpt.pop(key)
 
         model.load_state_dict(pose_ckpt)
+        model.to(self.device)
         return model
 
     def set_image(self, img_path):
         self.img = Image.open(img_path).convert('RGB')
-        # return img
 
     def get_detection(self):
         W, H = self.img.size
         og_img = self.img.copy()
         img = np.array(self.img)[:,:,::-1]
         img = torch.tensor(img.copy())
-        img = img.permute(2, 0, 1)
-        mask = torch.zeros(1, H, W).to(bool)
-        sparse_labeling = torch.zeros(1, 3, 2, 867, 1)
-        img = NestedTensor(img, mask=mask)
+        img = img.permute(2, 0, 1).to(self.device)
+        mask = torch.zeros(1, H, W).to(self.device).to(bool)
+        sparse_labeling = torch.zeros(1, 3, 2, 867, 1).to(self.device)
+        orig_size = torch.tensor([[H, W]]).to(self.device)
+        img = NestedTensor(img, mask=mask)        
         input = edict(image=img,
                       sparse_labeling=sparse_labeling,
-                      orig_size=torch.tensor([[H, W]]))
+                      orig_size=orig_size)
         output = self.det_model(input, 0)
         threshold = 0.5
         det_idx = (output['pred'][0]['scores'] > threshold).nonzero(as_tuple=True)[0]
@@ -260,7 +259,7 @@ class HumanModel:
         img = np.array(img)[:, :, ::-1]
         img = torch.tensor(img.copy())
         img = img.permute(2, 0, 1)
-        img = img.unsqueeze(0)
+        img = img.unsqueeze(0).to(self.device)
         center = [cW/2, cH/2]
         scale = [cW/200, cH/200]
         flip_pairs = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16)]
@@ -274,7 +273,6 @@ class HumanModel:
                           ))])
         output = self.pose_model(input, 0)
         keypoints = mmpose_to_coco(output['preds'])
-        print(keypoints, output['preds'])
         pose = draw_pose_from_cords(keypoints, (cH, cW), radius=2, draw_bones=True)
 
         img = np.array(cropped_img)
@@ -288,7 +286,7 @@ class HumanModel:
         img = np.array(img)[:,:,::-1]
         img = torch.tensor(img.copy())
         img = img.permute(2, 0, 1)
-        img = img.unsqueeze(0)
+        img = img.unsqueeze(0).to(self.device)
         input = edict(image=img, gt=gt)
         output = self.parse_model(input, 0)
         parse = torch.argmax(output['pred'][0]['sem_seg'], dim=0)
@@ -308,7 +306,7 @@ if __name__ == "__main__":
     world_size = 1
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
-    device = torch.device('cpu')
+    device = torch.device('cuda')
     pipeline = HumanModel(device)
     img_path = 'your_img_path'
 
