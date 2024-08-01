@@ -160,12 +160,14 @@ class aio_entry_v2mae_shareneck(nn.Module):
         # prepare for caption input
         bos_token_id, eos_token_ids, pad_token_id = 101, [102], 0
         batch_size, max_generate_len = x['input_id'].shape[0], x['input_id'].shape[1]
-        input_ids = torch.full((batch_size, 1), bos_token_id, dtype=torch.long, device='cuda')
+        input_ids = torch.full((batch_size, 1), bos_token_id, dtype=torch.long)
+        # input_ids = torch.full((batch_size, 1), bos_token_id, dtype=torch.long, device='cuda')
         cur_len = input_ids.shape[1]
         unfinished_sents, logprobs = [], []
         cur_unfinished = input_ids.new(batch_size).fill_(1)
         while cur_len < max_generate_len:
-            pad_ids = torch.full((batch_size, max_generate_len - input_ids.shape[1]), pad_token_id, dtype=torch.long, device='cuda')
+            pad_ids = torch.full((batch_size, max_generate_len - input_ids.shape[1]), pad_token_id, dtype=torch.long)
+            # pad_ids = torch.full((batch_size, max_generate_len - input_ids.shape[1]), pad_token_id, dtype=torch.long, device='cuda')
             x['cur_len'] = cur_len
             x['input_id'] = torch.cat([input_ids, pad_ids], dim=1)
             decoder_feature = self.decoder_module(x)
@@ -250,7 +252,7 @@ class aio_entry_v2mae_shareneck(nn.Module):
         keypoint_result = self.pose_decode(input_var["img_metas"], output_heatmap)  # default output_heatmap
 
         if 'pred_logits' in label_outputs:
-            keypoint_result['pred_logits'] = label_outputs['pred_logits'].sigmoid().cpu().numpy()
+            keypoint_result['pred_logits'] = label_outputs['pred_logits'].sigmoid().cpu().detach().numpy()
 
         return keypoint_result
 
@@ -285,7 +287,7 @@ class aio_entry_v2mae_shareneck(nn.Module):
         for i in range(len(label_outputs)):
             ori = label_outputs[i]['sem_seg']
             flip = label_outputs_flipped[i]['sem_seg'].flip(2)  #torch.Size([20, 500, 334])
-            flip_channeled = copy.deepcopy(flip)
+            flip_channeled = copy.deepcopy(flip.detach())
             for idx, channel in enumerate(left_channels):
                 flip_channeled[channel,:,:] = flip[right_channels[idx],:,:]
             for idx, channel in enumerate(right_channels):

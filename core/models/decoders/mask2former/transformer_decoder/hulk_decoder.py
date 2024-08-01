@@ -662,7 +662,7 @@ class Hulk_Decoder(nn.Module):
                     self.mask_token = nn.Parameter(torch.zeros(1, num_mask_tokens, 768))  # useless
                     self.register_buffer('mask_token_buffer', torch.zeros(1, num_mask_tokens, 768))
                     self.mask_token_proj = nn.Linear(768, hidden_dim)
-                    self.mask_token_buffer.copy_(torch.load('caption_bert.pth', 'cpu').unsqueeze(0))
+                    self.mask_token_buffer.copy_(torch.load('./experiments/release/caption_bert.pth', 'cpu').unsqueeze(0))
                 else:
                     self.mask_token = nn.Parameter(torch.zeros(1, num_mask_tokens, hidden_dim))
                     if self.mask_token_normal_init:
@@ -687,8 +687,8 @@ class Hulk_Decoder(nn.Module):
             self.anchor = nn.Parameter(torch.zeros(1, num_anchors, self.peddet_cfgs.get('query_pe_dim', 3),),
                                        requires_grad=self.peddet_cfgs.get('anchor_requires_grad', True))  # xyz, 3 dim
             assert self.peddet_cfgs.get('pre_defined_path', '')
-            anchor_points = np.load(self.peddet_cfgs.get('pre_defined_path'))
-            self.anchor.data.copy_(torch.from_numpy(anchor_points))
+            # anchor_points = np.load(self.peddet_cfgs.get('pre_defined_path'))
+            # self.anchor.data.copy_(torch.from_numpy(anchor_points))
         else:
             self.anchor = None
 
@@ -927,6 +927,7 @@ class Hulk_Decoder(nn.Module):
 
         # add mask tokens as the modality tokens,
         if self.caption_cfgs != {}:
+            self.training = False
             if self.training:
                 token_ids, token_padding_mask = x['input_id'][:, :-1], x['padding_mask'][:, :-1]
                 token_padding_mask = (1. - token_padding_mask).cpu()
@@ -1014,7 +1015,6 @@ class Hulk_Decoder(nn.Module):
                 # zero embedding to indicate no embedding for different modalities
                 task_embed = torch.zeros([batch_size, 0, self.hidden_dim], device=self.query_embed_patch.device)
             task_embeddings.append(task_embed)
-
 
         task_embeddings = torch.cat(task_embeddings, dim=1)
 

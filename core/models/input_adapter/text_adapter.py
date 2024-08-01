@@ -116,7 +116,7 @@ class TextAdapter(nn.Module):
             if self.training:
                 text_embedding = torch.zeros(token_id.shape[0], token_id[:, :-1].shape[1], self.embed_dim).cuda()
             else:
-                text_embedding = torch.zeros(token_id.shape[0], token_id.shape[1], self.embed_dim).cuda()
+                text_embedding = torch.zeros(token_id.shape[0], token_id.shape[1], self.embed_dim) #.cuda()
 
             B = token_id.shape[0]
 

@@ -1,0 +1,3 @@
+__pycache__/
+checkpoints/
+core/models/backbones/pretrain_weights/

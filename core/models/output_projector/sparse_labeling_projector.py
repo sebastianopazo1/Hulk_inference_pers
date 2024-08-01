@@ -103,10 +103,10 @@ class SpatialTemporalSeq2DProjector(nn.Module):
         self.translate_bias = nn.Parameter(torch.zeros([1]))
 
         self.text_features = nn.Parameter(torch.randn(num_classes, self.text_dim), requires_grad=False)
-        self.text_features.data.copy_(torch.load(f'./{description_dict_name}.pth'))
+        # self.text_features.data.copy_(torch.load(f'./{description_dict_name}.pth'))
 
-        self.loss_cfg.kwargs.cfg.ginfo = self.loss_cfg.kwargs.pop('ginfo')   # ginfo is added in the solver_mae_devnew.py create model
-        self.loss_fn = recons_loss_entry(self.loss_cfg)
+        # self.loss_cfg.kwargs.cfg.ginfo = self.loss_cfg.kwargs.pop('ginfo')   # ginfo is added in the solver_mae_devnew.py create model
+        # self.loss_fn = recons_loss_entry(self.loss_cfg)
 
     def forward_points(self, sparse_labeling_output, reference=None):
         sparse_labeling_output_points = self.output_proj(sparse_labeling_output)  # points
