@@ -178,7 +178,7 @@ def module_compare(module_list):
             print(i)
 
 class HumanModel:
-    def __init__(self, device):
+    def __init__(self, device, margin=10):
 
         config = './experiments/release/custom_config.yaml'
         #DETECT
@@ -187,7 +187,7 @@ class HumanModel:
         path_pose = 'checkpoints/ckpt_task8_iter_newest.pth.tar'
         #PARSE
         path_parse = 'checkpoints/ckpt_task17_iter_newest.pth.tar'
-
+        self.margin = margin
         self.device = device
         self.det_model = self.load_model(config, path_detect, 0)
         self.pose_model = self.load_model(config, path_pose, 1)
@@ -203,7 +203,7 @@ class HumanModel:
         config = edict(C_hulk.config['common'])
         model = create_model(config)
 
-        pose_ckpt = torch.load(checkpoint_path, map_location=self.device) 
+        pose_ckpt = torch.load(checkpoint_path, map_location=self.device)
         pose_ckpt = pose_ckpt['state_dict']
         for key in list(pose_ckpt.keys()):
             pose_ckpt[key[7:]] = pose_ckpt.pop(key)
@@ -212,48 +212,75 @@ class HumanModel:
         model.to(self.device)
         return model
 
-    def set_image(self, img_path):
+    def set_image(self, img_path, max_size=1024):
         self.img = Image.open(img_path).convert('RGB')
+        self.source_W, self.source_H = self.img.size
+
+        if self.source_W > max_size or self.source_H > max_size:
+          if self.source_W > self.source_H:
+            self.W = max_size
+            self.H = self.source_H*max_size//self.source_W
+          elif self.source_W < self.source_H:
+            self.H = max_size
+            self.W = self.source_W*max_size//self.source_H
+          else:
+            self.H = max_size
+            self.W = max_size
+          self.img = self.img.resize((self.W, self.H))
+          self.resized = True
+        else:
+          self.W = self.source_W
+          self.H = self.source_H
+          self.resized = False
+
+        self.box, self.detected_human = self.get_detection()
+
+        if self.box is not None:
+          if self.resized:
+            box = self.box*[self.source_W/self.W, self.source_W/self.W, self.source_H/self.H, self.source_H/self.H]
+          box = (np.int32(box)).tolist()[0]           
+        else:
+          box = None
+        return box
+
 
     def get_detection(self):
-        W, H = self.img.size
         og_img = self.img.copy()
         img = np.array(self.img)[:,:,::-1]
         img = torch.tensor(img.copy())
         img = img.permute(2, 0, 1).to(self.device)
-        mask = torch.zeros(1, H, W).to(self.device).to(bool)
+        mask = torch.zeros(1, self.H, self.W).to(self.device).to(bool)
         sparse_labeling = torch.zeros(1, 3, 2, 867, 1).to(self.device)
-        orig_size = torch.tensor([[H, W]]).to(self.device)
-        img = NestedTensor(img, mask=mask)        
+        orig_size = torch.tensor([[self.H, self.W]]).to(self.device)
+        img = NestedTensor(img, mask=mask)
         input = edict(image=img,
                       sparse_labeling=sparse_labeling,
                       orig_size=orig_size)
         output = self.det_model(input, 0)
         threshold = 0.5
-        det_idx = (output['pred'][0]['scores'] > threshold).nonzero(as_tuple=True)[0]
+        det_idx = (output['pred'][0]['scores'] > threshold).nonzero(as_tuple=True)
+        det_idx = det_idx[0]
+
         if det_idx.shape[0] == 0:
             det_idx = [0]
-            print('Error prob: ', output['pred'][0]['scores'][0])
-        margin = 30
+            return None, None
         boxes = output['pred'][0]['boxes'][det_idx].cpu().detach()
-        boxes[:, :2] -= margin
-        boxes[:, 2:4] += margin
+        boxes[:, :2] -= self.margin
+        boxes[:, 2:4] += self.margin
 
         boxes[:, :2][boxes[:, :2] < 0] = 0
-        boxes[:, 2][boxes[:, 2] > W] = W
-        boxes[:, 3][boxes[:, 3] > H] = H
+        boxes[:, 2][boxes[:, 2] > self.W] = self.W
+        boxes[:, 3][boxes[:, 3] > self.H] = self.H
         boxes = boxes.numpy()
-
-        img_d = ImageDraw.Draw(og_img)
-        for box in boxes:
-            img_d.rectangle(box, outline="red", width=5)
+        boxes = np.int32(boxes)
 
         cropped_img = og_img.crop(boxes[0])
         return boxes, cropped_img
 
-    def get_pose(self, cropped_img):
+    def get_pose(self, radius=2):
+        assert self.detected_human is not None or self.box is not None, 'Human not detected, try another image'
         nW, nH = 192, 256
-        img = cropped_img.copy()
+        img = self.detected_human.copy()
         cW, cH = img.size
         img = img.resize((nW, nH))
         img = np.array(img)[:, :, ::-1]
@@ -273,16 +300,21 @@ class HumanModel:
                           ))])
         output = self.pose_model(input, 0)
         keypoints = mmpose_to_coco(output['preds'])
-        pose = draw_pose_from_cords(keypoints, (cH, cW), radius=2, draw_bones=True)
+        keypoints += (keypoints != -1)*self.box[0][:2][::-1]
 
-        img = np.array(cropped_img)
-        img[pose>0] = pose[pose>0]
-        return keypoints, img
+        if self.resized:
+          keypoints = (keypoints != -1)*keypoints*[self.source_W/self.W, self.source_H/self.H] + (keypoints == -1)*(-1)
+          radius = int(radius*self.source_W/self.W)
+        pose = draw_pose_from_cords(keypoints, (self.source_H, self.source_W), radius=radius, draw_bones=True)
+        pose = Image.fromarray(pose)
 
-    def get_parse(self, cropped_img):
-        cW, cH = cropped_img.size
+        return keypoints, pose
+
+    def get_parse(self):
+        assert self.detected_human is not None or self.box is not None, 'Human not detected, try another image'
+        cW, cH = self.detected_human.size
         gt = torch.zeros((1, 3, cH, cW))
-        img = cropped_img.resize((480, 480))
+        img = self.detected_human.resize((480, 480))
         img = np.array(img)[:,:,::-1]
         img = torch.tensor(img.copy())
         img = img.permute(2, 0, 1)
@@ -291,9 +323,14 @@ class HumanModel:
         output = self.parse_model(input, 0)
         parse = torch.argmax(output['pred'][0]['sem_seg'], dim=0)
         parse = parse.cpu().numpy()
-        img = Image.fromarray(np.uint8(parse))
-        img.putpalette(self.human_parse)
-        return parse, img
+
+        zeros = np.zeros((self.H,self.W))
+        zeros[self.box[0][1]:self.box[0][3],self.box[0][0]:self.box[0][2]] = parse
+        img = Image.fromarray(np.uint8(zeros))
+        if self.resized:
+          img = img.resize((self.source_W,self.source_H), Image.NEAREST)
+        img.putpalette(pipeline.human_parse)
+        return img
 
 
 if __name__ == "__main__":
@@ -308,9 +345,8 @@ if __name__ == "__main__":
 
     device = torch.device('cuda')
     pipeline = HumanModel(device)
-    img_path = 'your_img_path'
+    img_path = 'your-img-path'
 
-    pipeline.set_image(img_path)
-    box, det_img = pipeline.get_detection()
-    keypoints, pose_img = pipeline.get_pose(det_img)
-    parse, parse_img = pipeline.get_parse(det_img)
+    box = pipeline.set_image(img_path)
+    keypoints, pose_img = pipeline.get_pose()
+    parse_img = pipeline.get_parse()
