@@ -794,6 +794,8 @@ class Hulk_Decoder(nn.Module):
         self.pos_embed = None  # valid when cross_pos_embed == 'pos_prior'
         self._reset_parameters()
 
+        self.device = dist.get_rank()
+
 
     def _reset_parameters(self):
         if self.cross_pos_embed == 'pos_prior':
@@ -827,7 +829,8 @@ class Hulk_Decoder(nn.Module):
             return self.backbone_pose_embed[0].permute(1, 0, 2)  # BxHWxC -> HWxBxC
         elif self.cross_pos_embed == 'anchor':
             assert shape is not None
-            mask = torch.zeros(batch, *shape, dtype=torch.bool).cuda()
+            mask = torch.zeros(batch, *shape, dtype=torch.bool).to(self.device)
+            # mask = torch.zeros(batch, *shape, dtype=torch.bool).cuda()
             H_n, W_n = shape
             pos_col, pos_row = mask2pos(mask)  # (1xh, 1xw) workaround to utilize existing codebase
             pos_2d = torch.cat([pos_row.unsqueeze(1).repeat(1, H_n, 1).unsqueeze(-1),
@@ -845,12 +848,15 @@ class Hulk_Decoder(nn.Module):
     
     def prepare_smpl_PE(self):
         # Generate T-pose template mesh
-        smpl = SMPL().to('cuda')
+        # smpl = SMPL().to('cuda')
+        smpl = SMPL().to(self.device)
         mesh_sampler = Mesh()
         template_pose = torch.zeros((1,72))
         template_pose[:,0] = 3.1416 # Rectify "upside down" reference mesh in global coord
-        template_pose = template_pose.cuda('cuda')
-        template_betas = torch.zeros((1,10)).cuda('cuda')
+        # template_pose = template_pose.cuda('cuda')
+        template_pose = template_pose.to(self.device)
+        # template_betas = torch.zeros((1,10)).cuda('cuda')
+        template_betas = torch.zeros((1,10)).to(self.device)
         template_vertices = smpl(template_pose, template_betas)
  
         # template mesh simplification
@@ -870,7 +876,8 @@ class Hulk_Decoder(nn.Module):
         # concatinate template joints and template vertices, and then duplicate to batch size
         ref_vertices = torch.cat([template_3d_joints, template_vertices_sub2],dim=1) #[1, 445, 3]
 
-        ref_vertices_clone = torch.zeros((ref_vertices.shape)).cuda('cuda')
+        # ref_vertices_clone = torch.zeros((ref_vertices.shape)).cuda('cuda')
+        ref_vertices_clone = torch.zeros((ref_vertices.shape)).to(self.device)
         ref_vertices_clone[:,:,0] = (ref_vertices[:,:,0] + 1) / 2
         ref_vertices_clone[:,:,1] = (ref_vertices[:,:,1] + 1) / 2
         ref_vertices_clone[:,:,2] = (ref_vertices[:,:,2] + 0.2) / 0.4
@@ -879,19 +886,23 @@ class Hulk_Decoder(nn.Module):
         grid_embed_label_xy = get_2d_sincos_pos_embed(self.query_embed_patch.shape[-1], int(224 ** 0.5))
         grid_embed_label_xy = interpolate_pos_embed(pos_embed_checkpoint=torch.from_numpy(grid_embed_label_xy),
                                                         patch_shape=[100, 100],
-                                                        num_extra_tokens=0).cuda()
+                                                        num_extra_tokens=0).to(self.device)
+                                                        # num_extra_tokens=0).cuda()
         
         ref_vertices_clone = (ref_vertices_clone*100)# we get the pixel coordinate
         xy_index = (ref_vertices_clone[:,:,0].long() + ref_vertices_clone[:,:,1].long() * 100).reshape([-1]).long()
         # import pdb;pdb.set_trace()
-        self.query_embed_label_xy = grid_embed_label_xy[:,xy_index].float().cuda()
+        self.query_embed_label_xy = grid_embed_label_xy[:,xy_index].float().to(self.device)
+        # self.query_embed_label_xy = grid_embed_label_xy[:,xy_index].float().cuda()
 
         grid_embed_label_z = get_1d_sincos_pos_embed_from_grid(self.query_embed_patch.shape[-1], pos = np.arange(int(224 ** 0.5), dtype=np.float32))
         grid_embed_label_z = interpolate_pos_embed_1d(pos_embed_checkpoint=torch.from_numpy(grid_embed_label_z),
                                                         patch_shape=100,
-                                                        num_extra_tokens=0).cuda()
+                                                        num_extra_tokens=0).to(self.device)
+                                                        # num_extra_tokens=0).cuda()
         z_index = ref_vertices_clone[:,:,2].reshape([-1]).reshape([-1]).long()
-        self.query_embed_label_z = grid_embed_label_z[:,z_index].float().cuda()
+        self.query_embed_label_z = grid_embed_label_z[:,z_index].float().to(self.device)
+        # self.query_embed_label_z = grid_embed_label_z[:,z_index].float().cuda()
 
         return
 
@@ -956,7 +967,8 @@ class Hulk_Decoder(nn.Module):
                 token_padding_mask[:, :cur_len] = 0
                 total_length = ids_shuffle.shape[1]
                 mask_length = mask_tokens.shape[1]
-                mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).cuda(), mask_tokens], dim=1),
+                # mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).cuda(), mask_tokens], dim=1),
+                mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).to(self.device), mask_tokens], dim=1),
                                         dim=1, index=ids_shuffle.unsqueeze(-1).repeat(1, 1, mask_tokens.shape[2]))[:, -mask_length:, :]
 
         elif self.peddet_cfgs.get('share_content_query', 1) == 1:
@@ -971,7 +983,8 @@ class Hulk_Decoder(nn.Module):
             # only support supervised learning, when the masking token are appended after visible  tokens
             total_length = ids_shuffle.shape[1]
             mask_length = mask_tokens.shape[1]
-            mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).cuda(), mask_tokens], dim=1),
+            # mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).cuda(), mask_tokens], dim=1),
+            mask_tokens = torch.gather(torch.cat([torch.zeros(batch_size, total_length-mask_length, mask_tokens.shape[2]).to(self.device), mask_tokens], dim=1),
                                        dim=1, index=ids_shuffle.unsqueeze(-1).repeat(1, 1, mask_tokens.shape[2]))[:, -mask_length:, :]
 
 
@@ -1262,7 +1275,8 @@ class Hulk_Decoder(nn.Module):
             if self.smpl_mae_pe:
                 positional_embeddings_xyz = self.adapt_pos2d(self.query_embed_label_xy) + self.adapt_pos1d(self.query_embed_label_z)
 
-                camera_PE = torch.zeros(1,1,self.hidden_dim).float().cuda()
+                camera_PE = torch.zeros(1,1,self.hidden_dim).float().to(self.device)
+                # camera_PE = torch.zeros(1,1,self.hidden_dim).float().cuda()
 
                 # print("self.query_embed.shape {}".format(self.query_embed.shape))
                 # print("self.query_embed_label.shape {}".format(self.query_embed_label.shape))
@@ -1301,7 +1315,8 @@ def vertices_3dembed(vertices, num_vertices_feats=256, temperature=10000):
     scale = 2 * math.pi
     vertices = vertices* scale
     dim_t = torch.arange(num_vertices_feats, dtype=torch.float32,)
-    dim_t = temperature ** (2 * (dim_t // 2) / num_vertices_feats).cuda()
+    dim_t = temperature ** (2 * (dim_t // 2) / num_vertices_feats).to(self.device)
+    # dim_t = temperature ** (2 * (dim_t // 2) / num_vertices_feats).cuda()
     # import pdb;pdb.set_trace()
     vertices_x = vertices[..., 0, None] / dim_t  # QxBx128
     vertices_y = vertices[..., 1, None] / dim_t
