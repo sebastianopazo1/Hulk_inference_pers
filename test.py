@@ -3,7 +3,6 @@ import os
 import torch.distributed as dist
 from core.models.model_entry import aio_entry_v2mae_shareneck
 from PIL import Image, ImageDraw
-from core.distributed_utils import dist_init
 from core.utils import NestedTensor
 import core.models.decoders as decoders
 import core.models.backbones as backbones
@@ -18,6 +17,8 @@ import re
 import numpy as np
 import torch.nn as nn
 from draw_utils import draw_pose_from_cords, mmpose_to_coco, get_palette
+import torch.multiprocessing as mp
+
 
 loader = yaml.SafeLoader
 loader.add_implicit_resolver(
@@ -58,7 +59,7 @@ def count_parameters_num(model):
     print('Number of conv/bn params: %.2fM' % (count / 1e6))
     print('Number of linear params: %.2fM' % (count_fc / 1e6))
 
-def create_model(config):
+def create_model(config, device):
     patch_adapter_module = input_adapter.patchembed_entry(config.patch_adapter)
     label_adapter_module = input_adapter.patchembed_entry(config.label_adapter)
 
@@ -155,7 +156,7 @@ def create_model(config):
     label_adapter_module.training = \
     patch_proj_module.training = \
     label_proj_module.training = is_training
-
+    
     ## build model
     model = aio_entry_v2mae_shareneck(backbone_module,
                                       patch_neck_module,
@@ -201,7 +202,7 @@ class HumanModel:
 
 
         config = edict(C_hulk.config['common'])
-        model = create_model(config)
+        model = create_model(config, self.device)
 
         pose_ckpt = torch.load(checkpoint_path, map_location=self.device)
         pose_ckpt = pose_ckpt['state_dict']
@@ -217,30 +218,33 @@ class HumanModel:
         self.source_W, self.source_H = self.img.size
 
         if self.source_W > max_size or self.source_H > max_size:
-          if self.source_W > self.source_H:
-            self.W = max_size
-            self.H = self.source_H*max_size//self.source_W
-          elif self.source_W < self.source_H:
-            self.H = max_size
-            self.W = self.source_W*max_size//self.source_H
-          else:
-            self.H = max_size
-            self.W = max_size
-          self.img = self.img.resize((self.W, self.H))
-          self.resized = True
+            if self.source_W > self.source_H:
+                self.W = max_size
+                self.H = self.source_H*max_size//self.source_W
+            elif self.source_W < self.source_H:
+                self.H = max_size
+                self.W = self.source_W*max_size//self.source_H
+            else:
+                self.H = max_size
+                self.W = max_size
+            self.img = self.img.resize((self.W, self.H))
+            self.resized = True
         else:
-          self.W = self.source_W
-          self.H = self.source_H
-          self.resized = False
+            self.W = self.source_W
+            self.H = self.source_H
+            self.resized = False
 
         self.box, self.detected_human = self.get_detection()
 
         if self.box is not None:
-          if self.resized:
-            box = self.box*[self.source_W/self.W, self.source_W/self.W, self.source_H/self.H, self.source_H/self.H]
-          box = (np.int32(box)).tolist()[0]           
+            if self.resized:
+                box = self.box*[self.source_W/self.W, self.source_W/self.W, self.source_H/self.H, self.source_H/self.H]
+            else:
+                box = self.box
+
+            box = (np.int32(box)).tolist()[0]           
         else:
-          box = None
+            box = None
         return box
 
 
@@ -252,11 +256,11 @@ class HumanModel:
         mask = torch.zeros(1, self.H, self.W).to(self.device).to(bool)
         sparse_labeling = torch.zeros(1, 3, 2, 867, 1).to(self.device)
         orig_size = torch.tensor([[self.H, self.W]]).to(self.device)
-        img = NestedTensor(img, mask=mask)
-        input = edict(image=img,
+        img = NestedTensor(img, mask=mask)        
+        input_img = edict(image=img,
                       sparse_labeling=sparse_labeling,
                       orig_size=orig_size)
-        output = self.det_model(input, 0)
+        output = self.det_model(input_img, 0)
         threshold = 0.5
         det_idx = (output['pred'][0]['scores'] > threshold).nonzero(as_tuple=True)
         det_idx = det_idx[0]
@@ -277,7 +281,7 @@ class HumanModel:
         cropped_img = og_img.crop(boxes[0])
         return boxes, cropped_img
 
-    def get_pose(self, radius=2):
+    def get_pose(self, img_path, radius=2):
         assert self.detected_human is not None or self.box is not None, 'Human not detected, try another image'
         nW, nH = 192, 256
         img = self.detected_human.copy()
@@ -290,7 +294,7 @@ class HumanModel:
         center = [cW/2, cH/2]
         scale = [cW/200, cH/200]
         flip_pairs = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16)]
-        input = edict(image=img,
+        input_img = edict(image=img,
                       img_metas=[edict(
                           data=edict(
                           flip_pairs=flip_pairs,
@@ -298,13 +302,13 @@ class HumanModel:
                           scale=scale,
                           image_file = img_path
                           ))])
-        output = self.pose_model(input, 0)
+        output = self.pose_model(input_img, 0)
         keypoints = mmpose_to_coco(output['preds'])
         keypoints += (keypoints != -1)*self.box[0][:2][::-1]
 
         if self.resized:
-          keypoints = (keypoints != -1)*keypoints*[self.source_W/self.W, self.source_H/self.H] + (keypoints == -1)*(-1)
-          radius = int(radius*self.source_W/self.W)
+            keypoints = (keypoints != -1)*keypoints*[self.source_W/self.W, self.source_H/self.H] + (keypoints == -1)*(-1)
+            radius = int(radius*self.source_W/self.W)
         pose = draw_pose_from_cords(keypoints, (self.source_H, self.source_W), radius=radius, draw_bones=True)
         pose = Image.fromarray(pose)
 
@@ -319,8 +323,8 @@ class HumanModel:
         img = torch.tensor(img.copy())
         img = img.permute(2, 0, 1)
         img = img.unsqueeze(0).to(self.device)
-        input = edict(image=img, gt=gt)
-        output = self.parse_model(input, 0)
+        input_img = edict(image=img, gt=gt)
+        output = self.parse_model(input_img, 0)
         parse = torch.argmax(output['pred'][0]['sem_seg'], dim=0)
         parse = parse.cpu().numpy()
 
@@ -328,25 +332,42 @@ class HumanModel:
         zeros[self.box[0][1]:self.box[0][3],self.box[0][0]:self.box[0][2]] = parse
         img = Image.fromarray(np.uint8(zeros))
         if self.resized:
-          img = img.resize((self.source_W,self.source_H), Image.NEAREST)
-        img.putpalette(pipeline.human_parse)
+            img = img.resize((self.source_W,self.source_H), Image.NEAREST)
+        img.putpalette(self.human_parse)
         return img
 
+def multi_inference(rank, world_size):    
+    setup(rank, world_size)    
 
-if __name__ == "__main__":
+    device = torch.device(rank)
+    pipeline = HumanModel(device)
+    img_path = 'your-image-path'
+    box = pipeline.set_image(img_path)
+    keypoints, pose_img = pipeline.get_pose(img_path)
+    parse_img = pipeline.get_parse()
 
+    cleanup()
+    
+    
+def cleanup():
+    dist.destroy_process_group()
+    
+def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
     # initialize the process group
-    rank = 0
-    world_size = 1
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
-    device = torch.device('cuda')
-    pipeline = HumanModel(device)
-    img_path = 'your-img-path'
+def run(fn, world_size):
+    mp.spawn(fn,
+             args=(world_size,),
+             nprocs=world_size,
+             join=True)   
+  
+    
+if __name__ == "__main__":
+    n_gpus = torch.cuda.device_count()
+    world_size = n_gpus
 
-    box = pipeline.set_image(img_path)
-    keypoints, pose_img = pipeline.get_pose()
-    parse_img = pipeline.get_parse()
+    run(multi_inference, world_size)

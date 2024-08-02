@@ -197,6 +197,8 @@ class RGBAdapter(nn.Module):
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
+        self.device = dist.get_rank()
+
     def initialize_proj_weights(self):
         """Initialize the projection weights like nn.Linear (instead of nn.Conv2d)"""
         w = self.proj.weight.data
@@ -220,12 +222,16 @@ class RGBAdapter(nn.Module):
            and the invalid region is set to the mean value of ImageNet
            (To support nested tensor in vit)
          """
+        device = dist.get_rank()
         if mask is not None:
             x = x * (~mask)[:, None, :, :] + mask[:, None, :, :] * torch.tensor([123.675, 116.280, 103.530]
-                                                                        ).view(1, 3, 1, 1).cuda()
+                                                                        ).view(1, 3, 1, 1).to(device)
+                                                                        # ).view(1, 3, 1, 1).cuda()
         assert len(x.shape) == 4
-        x = x.sub(torch.tensor([123.675, 116.280, 103.530]).view(1, 3, 1, 1).cuda()).div(
-            torch.tensor([58.395, 57.120, 57.375]).view(1, 3, 1, 1).cuda())
+        x = x.sub(torch.tensor([123.675, 116.280, 103.530]).view(1, 3, 1, 1).to(device)).div(
+            torch.tensor([58.395, 57.120, 57.375]).view(1, 3, 1, 1).to(device))
+        # x = x.sub(torch.tensor([123.675, 116.280, 103.530]).view(1, 3, 1, 1).cuda()).div(
+        #     torch.tensor([58.395, 57.120, 57.375]).view(1, 3, 1, 1).cuda())
         return x
 
     def forward_proj(self, x, mask=None, **kwargs):
@@ -293,7 +299,8 @@ class RGBAdapter(nn.Module):
             h_list = not_mask.sum(1)[:,0]
             w_list = not_mask.sum(2)[:,0]
             for idx, (h, w) in enumerate(zip(h_list, w_list)):
-                input_var.instances[idx].boxes *= torch.as_tensor([w/W, h/H, w/W, h/H], dtype=torch.float32).cuda()
+                input_var.instances[idx].boxes *= torch.as_tensor([w/W, h/H, w/W, h/H], dtype=torch.float32).to(self.device)
+                # input_var.instances[idx].boxes *= torch.as_tensor([w/W, h/H, w/W, h/H], dtype=torch.float32).cuda()
 
         return input_var
 
