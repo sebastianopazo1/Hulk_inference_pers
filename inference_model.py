@@ -1,22 +1,24 @@
+import re
+
+import numpy as np
 import torch
 import torch.nn as nn
-from core.models.model_entry import aio_entry_v2mae_shareneck
+import torch.nn.functional as F
+import yaml
+from dict_recursive_update import recursive_update
+from easydict import EasyDict as edict
 from PIL import Image
-from core.utils import NestedTensor
-import core.models.decoders as decoders
+from torchvision import transforms
+
 import core.models.backbones as backbones
+import core.models.decoders as decoders
+import core.models.input_adapter as input_adapter
 import core.models.necks as necks
 import core.models.output_projector as output_projector
-import core.models.input_adapter as input_adapter
-from easydict import EasyDict as edict
 from core.config_inference import Config_Hulk
-from dict_recursive_update import recursive_update
-import yaml
-import re
-import numpy as np
+from core.models.model_entry import aio_entry_v2mae_shareneck
+from core.utils import NestedTensor
 from draw_utils import draw_pose_from_cords, mmpose_to_coco
-import torch.nn.functional as F
-from torchvision import transforms
 
 loader = yaml.SafeLoader
 loader.add_implicit_resolver(
@@ -244,7 +246,7 @@ class HumanHulk:
                                      [255, 170, 0]])
             self.palette = CIHP_palette.flatten().tolist()
             self.parse_transform = transforms.Compose([
-                            transforms.Resize(480),
+                            transforms.Resize((480, 480)),
                             transforms.PILToTensor(),
                             ])
         # CAPTION
@@ -255,7 +257,7 @@ class HumanHulk:
             self.tokenizer = BertTokenizer.from_pretrained(
                 './experiments/release/bert-base-uncased/', do_lower=True)
             self.caption_transform = transforms.Compose([
-                            transforms.Resize(384),
+                            transforms.Resize((384, 384)),
                             transforms.ToTensor(),
                             ])
 
