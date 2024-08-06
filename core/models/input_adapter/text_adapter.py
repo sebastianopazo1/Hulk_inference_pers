@@ -56,7 +56,7 @@ class TextAdapter(nn.Module):
         self.people_cnt = people_cnt
         self.image_caption = image_caption
         self.embed_dim = embed_dim
-
+        self.device = dist.get_rank()
 
         if not self.image_caption:
             if isinstance(description_dict_name, list):
@@ -116,7 +116,7 @@ class TextAdapter(nn.Module):
             if self.training:
                 text_embedding = torch.zeros(token_id.shape[0], token_id[:, :-1].shape[1], self.embed_dim).cuda()
             else:
-                text_embedding = torch.zeros(token_id.shape[0], token_id.shape[1], self.embed_dim) #.cuda()
+                text_embedding = torch.zeros(token_id.shape[0], token_id.shape[1], self.embed_dim).to(self.device) #.cuda()
 
             B = token_id.shape[0]
 
