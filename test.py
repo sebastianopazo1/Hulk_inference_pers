@@ -1,8 +1,9 @@
-import torch
+import json
 import os
+
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import json
 
 from inference_model import HumanHulk
 
