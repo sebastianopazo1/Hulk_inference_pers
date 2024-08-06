@@ -360,13 +360,13 @@ class HumanHulk:
                               ))])
         output = self.pose_model(input_img, 0)
         keypoints = mmpose_to_coco(output['preds'])
-        keypoints += (keypoints != -1)*self.box[0][:2][::-1]
-
+        keypoints[:,:2] += self.box[0][:2][::-1]
+        
         if self.resized:
-            keypoints = (keypoints != -1)*keypoints * \
-                [self.source_W/self.W, self.source_H/self.H] + \
-                (keypoints == -1)*(-1)
+            keypoints[:,:2] = keypoints[:,:2] * \
+                [self.source_W/self.W, self.source_H/self.H] 
             radius = int(radius*self.source_W/self.W)
+        keypoints[:, :2] = np.int32(keypoints[:,:2])
         pose = draw_pose_from_cords(
             keypoints, (self.source_H, self.source_W), radius=radius, draw_bones=True)
         pose = Image.fromarray(pose)

@@ -67,27 +67,27 @@ def cords_to_map(cords, img_size, affine_matrix=None, sigma=6):
     return result
 
 
-def draw_pose_from_cords(array, img_size, radius=2, draw_bones=True):
+def draw_pose_from_cords(array, img_size, radius=2, draw_bones=True, kpt_thr=0.2):
     colors = np.zeros(shape=img_size + (3, ), dtype=np.uint8)
 
     if draw_bones:
         for i, (f, t) in enumerate(BONES):
-            from_missing = array[f][0] == -1 or array[f][1] == -1
-            to_missing = array[t][0] == -1 or array[t][1] == -1
+            from_missing = array[f][2] < kpt_thr
+            to_missing = array[t][2] < kpt_thr
             if from_missing or to_missing:
                 continue
             cv2.line(colors, (int(array[f][1]), int(array[f][0])),
                      (int(array[t][1]), int(array[t][0])), BONE_COLORS[i], radius, cv2.LINE_AA)
 
     for i, joint in enumerate(array):
-        if array[i][0] == -1 or array[i][1] == -1:
+        if array[i][2] < kpt_thr:
             continue
         cv2.circle(colors, (int(joint[1]), int(joint[0])), radius + 1, JOINT_COLORS[i], -1, cv2.LINE_AA)
 
     return colors
 
 
-def mmpose_to_coco(keypoints_info, kpt_thr=0.3):
+def mmpose_to_coco(keypoints_info, kpt_thr=0.2):
     neck = np.mean(keypoints_info[:, [5, 6]], axis=1)
     neck[:, 2:3] = np.logical_and(
         keypoints_info[:, 5, 2:3] > kpt_thr,
@@ -95,9 +95,9 @@ def mmpose_to_coco(keypoints_info, kpt_thr=0.3):
     new_keypoints_info = np.insert(keypoints_info, 17, neck, axis=1)
     new_keypoints_info[:, openpose_idx] = \
         new_keypoints_info[:, mmpose_idx]
-    new_keypoints_info[0, :, :-1][new_keypoints_info[0, :, -1] < kpt_thr] = -1
-    # new_keypoints_info[0, :, :-1][new_keypoints_info[0, :, :-1] < 0] = -1
-    return new_keypoints_info[0, :, :-1][:, ::-1]
+    new_keypoints_info[0, :, :-1][new_keypoints_info[0, :, :-1] < 0] = 0
+    out = np.concatenate([new_keypoints_info[0, :, :-1][:, ::-1], np.expand_dims(new_keypoints_info[0, :, -1], 1)], axis = 1)
+    return out
 
 
 def get_palette(num_cls):
